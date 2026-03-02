@@ -3,26 +3,52 @@
 
 version = 0.1
 
+# ── default environment (used for AWS deployment) ─────────────────────────────
+# Architecture = arm64  (Graviton2, ~20% cheaper on AWS)
+
 [default]
 [default.global.parameters]
 stack_name = "ai-lambda-backend"
+region = "ap-southeast-2"
 
 [default.build.parameters]
-use_container = true
-parallel = true
-cached = true
+use_container       = true
+parallel            = true
+cached              = true
+parameter_overrides = "Architecture=x86_64 AlarmEmail="
 
 [default.deploy.parameters]
-stack_name        = "ai-lambda-backend"
-region            = "us-east-1"
-confirm_changeset = true
-resolve_s3        = true
-capabilities      = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
-parameter_overrides = "AlarmEmail="
+region              = "ap-southeast-2"
+confirm_changeset   = true
+resolve_s3          = true
+capabilities        = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+parameter_overrides = "AlarmEmail=\"\" Architecture=\"x86_64\""
+s3_prefix = "ai-lambda-backend"
+image_repositories = []
 
 [default.local_invoke.parameters]
 env_vars = "env.json"
 
 [default.local_start_api.parameters]
 env_vars = "env.json"
-port = 3000
+port     = 3000
+
+# ── local environment (used for building + testing on an Intel/AMD PC) ────────
+# Architecture = x86_64  (native container on Intel/AMD — no QEMU, no hanging)
+
+[local]
+[local.global.parameters]
+stack_name = "ai-lambda-backend"
+
+[local.build.parameters]
+use_container       = true
+parallel            = true
+cached              = true
+parameter_overrides = "Architecture=x86_64 AlarmEmail="
+
+[local.local_invoke.parameters]
+env_vars = "env.json"
+
+[local.local_start_api.parameters]
+env_vars = "env.json"
+port     = 3000

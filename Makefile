@@ -2,12 +2,18 @@
         logs-health logs-chat test lint format clean
 
 STACK_NAME   ?= ai-lambda-backend
-REGION       ?= us-east-1
+REGION       ?= ap-southeast-2
 LOG_TAIL     ?= 50
 
 # ── Build ──────────────────────────────────────────────────────────────────────
+# build       → arm64  (for AWS deployment, Graviton2)
+# build-local → x86_64 (for local testing on Intel/AMD machines, no QEMU needed)
+
 build:
-	sam build --use-container --parallel --cached
+	sam build --config-env default
+
+build-local:
+	sam build --config-env local
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 deploy-guided:
@@ -20,16 +26,18 @@ deploy:
 invoke-health:
 	sam local invoke HealthFunction \
 		--event events/health_request.json \
-		--env-vars env.json
+		--env-vars env.json \
+		--config-env local
 
 invoke-chat:
 	sam local invoke ChatFunction \
 		--event events/chat_request.json \
-		--env-vars env.json
+		--env-vars env.json \
+		--config-env local
 
 # ── Local API (requires Docker + env.json) ────────────────────────────────────
 local-api:
-	sam local start-api --env-vars env.json --port 3000
+	sam local start-api --env-vars env.json --port 3000 --config-env local
 
 # ── CloudWatch Logs ────────────────────────────────────────────────────────────
 logs-health:

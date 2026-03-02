@@ -16,7 +16,7 @@ under 15 minutes.
 | `POST /chat` | OpenAI Chat Completions (model, tokens, temperature all configurable) |
 | `GET /health` | Liveness probe for uptime monitoring |
 | **Serverless** | AWS Lambda — pay only for requests made, scales to zero |
-| **ARM64 / Graviton2** | ~20% cheaper and faster than x86 Lambda |
+| **x86_64** | Runs on standard Lambda infrastructure, broadest compatibility |
 | **Secrets management** | API key stored in AWS Secrets Manager, never in env vars or code |
 | **Observability** | Structured JSON logs, X-Ray distributed tracing, CloudWatch metrics |
 | **Alarms** | Error rate > 5%, any throttles, P99 duration > 48 s |
@@ -36,7 +36,7 @@ API Gateway HTTP API v2  ──── throttle: 50 req/s burst 100
   GET /health      POST /chat
   │                │
   ▼                ▼
-HealthFunction   ChatFunction  (512 MB, 60 s timeout, ARM64)
+HealthFunction   ChatFunction  (512 MB, 60 s timeout, x86_64)
   │                │
   │                ├── AWS Secrets Manager  (OpenAI API key)
   │                └── OpenAI API  (Chat Completions)
@@ -76,7 +76,7 @@ Configure with your credentials:
 aws configure
 # AWS Access Key ID:     <your key>
 # AWS Secret Access Key: <your secret>
-# Default region name:   us-east-1      # or any region you prefer
+# Default region name:   ap-southeast-2      # or any region you prefer
 # Default output format: json
 ```
 
@@ -115,7 +115,7 @@ the Lambda runtime, ensuring native dependencies compile correctly.
 
 Download Docker Desktop from <https://www.docker.com/products/docker-desktop/>.
 
-Make sure Docker is **running** before you execute `sam build`.
+Make sure Docker is **running** before you build.
 
 Verify:
 
@@ -143,6 +143,28 @@ sudo apt install python3.12
 
 ---
 
+## A note on commands — Windows vs macOS/Linux
+
+The `Makefile` in this project provides short aliases like `make build` and
+`make deploy`. On **macOS and Linux** these work out of the box.
+
+On **Windows**, `make` is not installed by default. Every `make` command in
+this guide has a direct equivalent shown alongside it. Use whichever fits your
+setup:
+
+| Platform | Use |
+|----------|-----|
+| macOS / Linux | `make <target>` |
+| Windows (PowerShell / CMD) | The `sam` / `python` command shown below each `make` line |
+
+To install `make` on Windows if you prefer it:
+```powershell
+winget install GnuWin32.Make
+# then restart your terminal
+```
+
+---
+
 ## Quick start
 
 ### Step 1 — Clone the repository
@@ -154,46 +176,58 @@ cd ai-lambda-backend
 
 ### Step 2 — Build
 
+The project builds and deploys as **x86_64**, which works on all developer
+machines and all AWS regions without any special configuration.
+
+**macOS / Linux:**
 ```bash
-make build
-# equivalent: sam build --use-container --parallel --cached
+make build-local
 ```
 
-SAM pulls a Python 3.12 ARM64 container image and installs the dependencies
-into `layers/dependencies/`. This takes a few minutes on the first run;
-subsequent builds use the cache and are much faster.
+**Windows:**
+```powershell
+sam build --use-container --parallel --cached --parameter-overrides "Architecture=x86_64 AlarmEmail="
+```
+
+SAM pulls a Python 3.12 container and installs the dependencies into a Lambda
+layer. This takes a few minutes on the first run; subsequent builds use the
+cache and complete in seconds.
+
+You should see `Build Succeeded` at the end.
 
 ### Step 3 — Deploy (first time)
 
+**macOS / Linux / Windows:**
 ```bash
 sam deploy --guided
 ```
 
-You will be asked a series of questions. Suggested answers:
+You will be asked a series of questions. Use these answers:
 
 ```
-Stack Name [ai-lambda-backend]:        ai-lambda-backend
-AWS Region [us-east-1]:               us-east-1          # change if you prefer
-AlarmEmail []:                         you@example.com    # optional, leave blank to skip
-Confirm changes before deploy [Y/n]:   y
-Allow SAM CLI IAM role creation [Y/n]: y
-Disable rollback [y/N]:                N
-Save arguments to configuration file:  Y
+Stack Name [ai-lambda-backend]:          ai-lambda-backend
+AWS Region [ap-southeast-2]:                  ap-southeast-2          # or your preferred region
+Parameter AlarmEmail []:                 you@example.com    # optional, press Enter to skip
+Parameter Architecture [x86_64]:         x86_64             # press Enter
+Confirm changes before deploy [Y/n]:     y
+Allow SAM CLI IAM role creation [Y/n]:   y
+Disable rollback [y/N]:                  N
+Save arguments to configuration file:    Y
 SAM configuration file [samconfig.toml]: samconfig.toml
 SAM configuration environment [default]: default
 ```
 
 SAM creates an S3 bucket automatically, packages the code, and deploys the
-CloudFormation stack. After a minute or two you will see:
+CloudFormation stack. After 2–3 minutes you will see:
 
 ```
 CloudFormation outputs from deployed stack
------------------------------------------
+------------------------------------------
 Key   ApiBaseUrl
-Value https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
+Value https://xxxxxxxxxx.execute-api.ap-southeast-2.amazonaws.com
 
 Key   OpenAISecretArn
-Value arn:aws:secretsmanager:us-east-1:123456789012:secret:ai-lambda-backend/openai-api-key-XXXXXX
+Value arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:ai-lambda-backend/openai-api-key-XXXXXX
 ```
 
 **Save the `ApiBaseUrl` and `OpenAISecretArn` values.** You will need them in
@@ -202,37 +236,39 @@ the next steps.
 ### Step 4 — Store your OpenAI API key
 
 The stack created a Secrets Manager secret with a placeholder value. Replace
-it with your real key:
+it with your real key.
 
+**macOS / Linux / Windows:**
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id "arn:aws:secretsmanager:us-east-1:123456789012:secret:ai-lambda-backend/openai-api-key-XXXXXX" \
-  --secret-string '{"openai_api_key": "sk-proj-YOUR_KEY_HERE"}'
+  --secret-id "PASTE_YOUR_OpenAISecretArn_HERE" \
+  --secret-string "{\"openai_api_key\": \"sk-proj-YOUR_KEY_HERE\"}"
 ```
 
-Replace the ARN with the value from step 3, and `sk-proj-YOUR_KEY_HERE` with
-your actual key.
+Replace `PASTE_YOUR_OpenAISecretArn_HERE` with the ARN from step 3, and
+`sk-proj-YOUR_KEY_HERE` with your actual OpenAI API key.
 
-Or use the Makefile helper (it fetches the ARN automatically and prompts for
-the key):
-
+**macOS / Linux only** (interactive helper):
 ```bash
 make update-secret
+# prompts for the key and updates the secret automatically
 ```
 
 ### Step 5 — Test your endpoints
 
+Replace the URL with your actual `ApiBaseUrl` from step 3.
+
+**Health check:**
 ```bash
-BASE="https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com"
-
-# Health check
-curl "$BASE/health"
+curl "https://xxxxxxxxxx.execute-api.ap-southeast-2.amazonaws.com/health"
 # {"status": "healthy", "service": "ai-lambda-backend", "version": "1.0.0"}
+```
 
-# Chat
-curl -X POST "$BASE/chat" \
+**Chat:**
+```bash
+curl -X POST "https://xxxxxxxxxx.execute-api.ap-southeast-2.amazonaws.com/chat" \
   -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello! What can you do?"}]}'
+  -d "{\"messages\": [{\"role\": \"user\", \"content\": \"Hello! What can you do?\"}]}"
 # {"message": "I can help you with...", "usage": {...}, "model": "gpt-4o-mini"}
 ```
 
@@ -255,7 +291,7 @@ All configuration is done through environment variables defined in
 | `OPENAI_TEMPERATURE` | `0.7` | Sampling temperature (0.0 – 2.0). |
 
 To change a default, edit the `Environment` block under `ChatFunction` in
-`template.yaml`, then redeploy with `make deploy`.
+`template.yaml`, then redeploy.
 
 ### Powertools (global)
 
@@ -268,7 +304,7 @@ To change a default, edit the `Environment` block under `ChatFunction` in
 ### Overriding per-request
 
 Clients can override `model`, `max_tokens`, and `temperature` in the request
-body. The handler validates and applies them:
+body:
 
 ```json
 {
@@ -349,52 +385,94 @@ pip install -r requirements-dev.txt
 
 ### Run unit tests
 
+All tests run offline with mocked AWS and OpenAI clients — no credentials or
+Docker required.
+
+**macOS / Linux:**
 ```bash
 make test
-# or: python -m pytest tests/ -v --tb=short
 ```
 
-All tests run offline with mocked AWS and OpenAI clients — no credentials
-required.
+**Windows:**
+```powershell
+python -m pytest tests/ -v --tb=short
+```
 
 ### Run tests with coverage
 
+**macOS / Linux:**
 ```bash
 make test-cov
-# opens htmlcov/index.html for a visual report
+```
+
+**Windows:**
+```powershell
+python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html
 ```
 
 ### Lint and format
 
+**macOS / Linux:**
 ```bash
-make lint      # flake8
-make format    # black (modifies files)
-make format-check  # black dry-run (CI-safe)
+make lint         # flake8
+make format       # black (modifies files)
+make format-check # black dry-run (CI-safe)
+```
+
+**Windows:**
+```powershell
+python -m flake8 src/ tests/ --max-line-length=120
+python -m black src/ tests/ --line-length=120
+python -m black src/ tests/ --line-length=120 --check
 ```
 
 ### Local invoke with SAM (requires Docker + real AWS secret)
 
-Copy the example env file and fill in your values:
+Copy the example env file and fill in your real Secrets Manager ARN:
 
+**macOS / Linux:**
 ```bash
 cp env.json.example env.json
-# Edit env.json — replace the ARN with your real Secrets Manager ARN
 ```
 
-Then invoke locally:
+**Windows:**
+```powershell
+copy env.json.example env.json
+```
 
+Then edit `env.json` and replace the placeholder ARN with your real one from
+the deploy output.
+
+**Invoke functions locally:**
+
+**macOS / Linux:**
 ```bash
 make invoke-health
 make invoke-chat
 ```
 
-Or start a full local HTTP server:
+**Windows:**
+```powershell
+sam local invoke HealthFunction --event events/health_request.json --env-vars env.json --config-env local
+sam local invoke ChatFunction --event events/chat_request.json --env-vars env.json --config-env local
+```
 
+**Start a full local HTTP server:**
+
+**macOS / Linux:**
 ```bash
 make local-api
-# curl http://localhost:3000/health
-# curl -X POST http://localhost:3000/chat -H "Content-Type: application/json" \
-#      -d '{"messages":[{"role":"user","content":"Hi"}]}'
+```
+
+**Windows:**
+```powershell
+sam local start-api --env-vars env.json --port 3000 --config-env local
+```
+
+Then test it:
+```bash
+curl http://localhost:3000/health
+curl -X POST http://localhost:3000/chat -H "Content-Type: application/json" -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"
 ```
 
 > **Note:** `env.json` is listed in `.gitignore` — it will never be committed.
@@ -405,11 +483,20 @@ make local-api
 ## Redeploying after changes
 
 After the first guided deploy, `samconfig.toml` stores your settings. All
-future deployments are a single command:
+future deployments are:
 
+**macOS / Linux:**
 ```bash
-make build && make deploy
+make build-local && sam deploy
 ```
+
+**Windows:**
+```powershell
+sam build --use-container --parallel --cached --parameter-overrides "Architecture=x86_64 AlarmEmail="
+sam deploy
+```
+
+> Both build and deploy use x86_64 — no architecture mismatch, no emulation needed.
 
 ---
 
@@ -417,8 +504,7 @@ make build && make deploy
 
 ### CloudWatch Dashboard
 
-Open the AWS Console → CloudWatch → Dashboards →
-`ai-lambda-backend-dashboard`.
+AWS Console → CloudWatch → Dashboards → `ai-lambda-backend-dashboard`
 
 The dashboard shows:
 - **Invocations** — both functions, 1-minute resolution
@@ -454,9 +540,16 @@ Each `POST /chat` trace includes:
 
 ### Tailing logs in real time
 
+**macOS / Linux:**
 ```bash
-make logs-chat    # tail ChatFunction logs
-make logs-health  # tail HealthFunction logs
+make logs-chat
+make logs-health
+```
+
+**Windows:**
+```powershell
+sam logs -n ChatFunction --stack-name ai-lambda-backend --region ap-southeast-2 --tail
+sam logs -n HealthFunction --stack-name ai-lambda-backend --region ap-southeast-2 --tail
 ```
 
 ---
@@ -487,8 +580,8 @@ ai-lambda-backend/
 ├── LICENSE                         # MIT
 ├── README.md                       # This file
 ├── template.yaml                   # SAM — all AWS resources
-├── samconfig.toml                  # SAM deploy defaults
-├── Makefile                        # Developer shortcuts
+├── samconfig.toml                  # SAM deploy defaults (x86_64)
+├── Makefile                        # Developer shortcuts (macOS/Linux)
 ├── requirements-dev.txt            # Test & lint dependencies
 ├── env.json.example                # Template for local invoke env overrides
 ├── .gitignore
@@ -527,7 +620,7 @@ update `OPENAI_MODEL`:
 OPENAI_MODEL: gpt-4o
 ```
 
-Then `make build && make deploy`.
+Then rebuild and redeploy.
 
 ### Add authentication
 
@@ -547,11 +640,10 @@ CorsConfiguration:
 
 ### Add a new endpoint
 
-1. Create `src/handlers/yourhandler.py` following the same pattern as
-   `health.py`.
+1. Create `src/handlers/yourhandler.py` following the same pattern as `health.py`.
 2. Add a `YourFunction` resource in `template.yaml` with an `HttpApi` event.
 3. Write tests in `tests/unit/test_yourhandler.py`.
-4. `make build && make deploy`.
+4. Rebuild and redeploy.
 
 ### Cap Lambda concurrency (control OpenAI costs)
 
@@ -565,10 +657,10 @@ This limits simultaneous OpenAI calls to 10, bounding your maximum spend rate.
 
 ### Enable email alerts
 
-Redeploy with your email address:
+Redeploy passing your email as a parameter:
 
 ```bash
-sam deploy --parameter-overrides AlarmEmail=you@example.com
+sam deploy --parameter-overrides "Architecture=x86_64 AlarmEmail=you@example.com"
 ```
 
 You will receive a confirmation email from AWS SNS. Click the confirmation
@@ -597,8 +689,12 @@ Contributions are welcome. To contribute:
 1. Fork the repository.
 2. Create a feature branch: `git checkout -b feat/your-feature`.
 3. Make your changes and add tests.
-4. Ensure all tests pass: `make test`.
-5. Ensure code is formatted: `make format-check`.
+4. Ensure all tests pass:
+   - macOS/Linux: `make test`
+   - Windows: `python -m pytest tests/ -v --tb=short`
+5. Ensure code is formatted:
+   - macOS/Linux: `make format-check`
+   - Windows: `python -m black src/ tests/ --line-length=120 --check`
 6. Open a pull request with a clear description of the change.
 
 Please keep pull requests focused. One feature or fix per PR.

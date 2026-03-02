@@ -10,7 +10,14 @@ from typing import Any
 
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.event_handler import APIGatewayHttpResolver
-from aws_lambda_powertools.event_handler.exceptions import BadRequestError, ServiceUnavailableError
+from aws_lambda_powertools.event_handler.exceptions import BadRequestError, ServiceError
+
+
+class ServiceUnavailableError(ServiceError):
+    """HTTP 503 — raised when a downstream dependency is unavailable."""
+
+    def __init__(self, msg: str):
+        super().__init__(503, msg)
 from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from openai import APIConnectionError, APIStatusError, RateLimitError

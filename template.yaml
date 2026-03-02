@@ -9,11 +9,19 @@ Parameters:
     Default: ""
     Description: "Optional email address to receive CloudWatch alarm notifications"
 
+  Architecture:
+    Type: String
+    Default: x86_64
+    AllowedValues:
+      - arm64
+      - x86_64
+    Description: "Lambda architecture. Defaults to x86_64 for broadest compatibility."
+
 Globals:
   Function:
     Runtime: python3.12
     Architectures:
-      - arm64
+      - !Ref Architecture
     Timeout: 60
     MemorySize: 512
     Tracing: Active
@@ -99,7 +107,7 @@ Resources:
       CompatibleRuntimes:
         - python3.12
       CompatibleArchitectures:
-        - arm64
+        - !Ref Architecture
       RetentionPolicy: Delete
     Metadata:
       BuildMethod: python3.12
