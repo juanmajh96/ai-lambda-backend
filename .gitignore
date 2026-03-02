@@ -1,0 +1,32 @@
+# SAM build artifacts
+.aws-sam/
+samconfig.toml.bak
+
+# Local environment overrides — NEVER commit secrets
+env.json
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.zip
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

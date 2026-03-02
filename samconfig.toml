@@ -1,0 +1,28 @@
+# SAM CLI deploy configuration
+# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-config.html
+
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "ai-lambda-backend"
+
+[default.build.parameters]
+use_container = true
+parallel = true
+cached = true
+
+[default.deploy.parameters]
+stack_name        = "ai-lambda-backend"
+region            = "us-east-1"
+confirm_changeset = true
+resolve_s3        = true
+capabilities      = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+parameter_overrides = "AlarmEmail="
+
+[default.local_invoke.parameters]
+env_vars = "env.json"
+
+[default.local_start_api.parameters]
+env_vars = "env.json"
+port = 3000

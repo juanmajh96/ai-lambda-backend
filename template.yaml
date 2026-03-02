@@ -1,0 +1,428 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: Production-grade serverless AI backend — OpenAI Chat Completions on AWS Lambda
+
+Parameters:
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: "Optional email address to receive CloudWatch alarm notifications"
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures:
+      - arm64
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+    Layers:
+      - !Ref DependenciesLayer
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: ai-lambda-backend
+        POWERTOOLS_LOG_LEVEL: INFO
+        POWERTOOLS_METRICS_NAMESPACE: AILambdaBackend
+        POWERTOOLS_TRACER_CAPTURE_RESPONSE: "true"
+        POWERTOOLS_TRACER_CAPTURE_ERROR: "true"
+    Tags:
+      Project: ai-lambda-backend
+
+Resources:
+  # ── 1. Secrets Manager ──────────────────────────────────────────────────────
+  OpenAIApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: ai-lambda-backend/openai-api-key
+      Description: OpenAI API key for ai-lambda-backend
+      SecretString: '{"openai_api_key": "PLACEHOLDER_REPLACE_AFTER_DEPLOY"}'
+      Tags:
+        - Key: Project
+          Value: ai-lambda-backend
+
+  # ── 2. IAM Role ─────────────────────────────────────────────────────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ai-lambda-backend-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: LambdaLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+        - PolicyName: SecretsManagerReadPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref OpenAIApiKeySecret
+        - PolicyName: CloudWatchMetricsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: AILambdaBackend
+      Tags:
+        - Key: Project
+          Value: ai-lambda-backend
+
+  # ── 3. Lambda Layer ──────────────────────────────────────────────────────────
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: ai-lambda-backend-dependencies
+      Description: openai, aws-lambda-powertools, boto3
+      ContentUri: layers/dependencies/
+      CompatibleRuntimes:
+        - python3.12
+      CompatibleArchitectures:
+        - arm64
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: python3.12
+
+  # ── 4. HTTP API v2 ───────────────────────────────────────────────────────────
+  BackendHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: "$default"
+      Description: AI Lambda Backend HTTP API
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      Tags:
+        Project: ai-lambda-backend
+
+  # ── 5. Health Function ───────────────────────────────────────────────────────
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ai-lambda-backend-health
+      CodeUri: src/
+      Handler: handlers.health.lambda_handler
+      Description: Liveness probe — GET /health
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        HealthEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BackendHttpApi
+            Path: /health
+            Method: GET
+      Tags:
+        Handler: health
+
+  # ── 6. Chat Function ─────────────────────────────────────────────────────────
+  ChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ai-lambda-backend-chat
+      CodeUri: src/
+      Handler: handlers.chat.lambda_handler
+      Description: OpenAI Chat Completions — POST /chat
+      MemorySize: 512
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          OPENAI_API_KEY_SECRET_ARN: !Ref OpenAIApiKeySecret
+          OPENAI_MODEL: gpt-4o-mini
+          OPENAI_MAX_TOKENS: "2048"
+          OPENAI_TEMPERATURE: "0.7"
+      Events:
+        ChatEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BackendHttpApi
+            Path: /chat
+            Method: POST
+      Tags:
+        Handler: chat
+
+  # ── 7. SNS Alarm Topic ───────────────────────────────────────────────────────
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: ai-lambda-backend-alarms
+      Subscription:
+        !If
+          - HasAlarmEmail
+          - - Protocol: email
+              Endpoint: !Ref AlarmEmail
+          - []
+      Tags:
+        - Key: Project
+          Value: ai-lambda-backend
+
+  # ── 8. Error Rate Alarm ──────────────────────────────────────────────────────
+  ErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ai-lambda-backend-error-rate-high
+      AlarmDescription: "Chat function error rate exceeded 5%"
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref ChatFunction
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref ChatFunction
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: errorRate
+          Expression: "IF(invocations > 0, errors / invocations * 100, 0)"
+          Label: ErrorRatePercent
+          ReturnData: true
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 5
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+
+  # ── 9. Throttle Alarm ────────────────────────────────────────────────────────
+  ThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ai-lambda-backend-throttles
+      AlarmDescription: "Lambda throttles detected"
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ChatFunction
+      Period: 300
+      Statistic: Sum
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+
+  # ── 10. P99 Duration Alarm ───────────────────────────────────────────────────
+  DurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ai-lambda-backend-p99-duration-high
+      AlarmDescription: "Chat function P99 duration exceeded 48s (80% of 60s timeout)"
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ChatFunction
+      Period: 300
+      ExtendedStatistic: p99
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 48000
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+
+  # ── 11. CloudWatch Dashboard ─────────────────────────────────────────────────
+  BackendDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: ai-lambda-backend-dashboard
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 6, "height": 6,
+              "properties": {
+                "title": "Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ChatFunction}", {"stat": "Sum", "color": "#1f77b4"}],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${HealthFunction}", {"stat": "Sum", "color": "#aec7e8"}]
+                ],
+                "period": 60,
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6, "y": 0, "width": 6, "height": 6,
+              "properties": {
+                "title": "Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ChatFunction}", {"stat": "Sum", "color": "#d62728"}],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${HealthFunction}", {"stat": "Sum", "color": "#ff9896"}]
+                ],
+                "period": 60,
+                "view": "timeSeries",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 6, "height": 6,
+              "properties": {
+                "title": "Throttles",
+                "metrics": [
+                  ["AWS/Lambda", "Throttles", "FunctionName", "${ChatFunction}", {"stat": "Sum", "color": "#ff7f0e"}]
+                ],
+                "period": 60,
+                "view": "timeSeries",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18, "y": 0, "width": 6, "height": 6,
+              "properties": {
+                "title": "Duration P50 / P99 (ms)",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${ChatFunction}", {"stat": "p50", "label": "P50", "color": "#2ca02c"}],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${ChatFunction}", {"stat": "p99", "label": "P99", "color": "#d62728"}]
+                ],
+                "period": 60,
+                "view": "timeSeries",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 6, "height": 6,
+              "properties": {
+                "title": "Error Rate %",
+                "metrics": [
+                  [{"expression": "IF(inv > 0, err / inv * 100, 0)", "label": "ErrorRate%", "id": "rate", "color": "#d62728"}],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ChatFunction}", {"id": "err", "visible": false, "stat": "Sum"}],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ChatFunction}", {"id": "inv", "visible": false, "stat": "Sum"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": {"left": {"min": 0, "max": 100}}
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6, "y": 6, "width": 6, "height": 6,
+              "properties": {
+                "title": "Cold Starts (EMF)",
+                "metrics": [
+                  ["AILambdaBackend", "ColdStart", "function_name", "${ChatFunction}", "service", "ai-lambda-backend", {"stat": "Sum", "color": "#9467bd"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 6, "width": 6, "height": 6,
+              "properties": {
+                "title": "API GW Latency (ms)",
+                "metrics": [
+                  ["AWS/ApiGateway", "Latency", "ApiId", "${BackendHttpApi}", {"stat": "p50", "label": "P50"}],
+                  ["AWS/ApiGateway", "Latency", "ApiId", "${BackendHttpApi}", {"stat": "p99", "label": "P99", "color": "#d62728"}]
+                ],
+                "period": 60,
+                "view": "timeSeries",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18, "y": 6, "width": 6, "height": 6,
+              "properties": {
+                "title": "Tokens Used (EMF)",
+                "metrics": [
+                  ["AILambdaBackend", "TokensUsed", "service", "ai-lambda-backend", {"stat": "Sum", "color": "#17becf"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Outputs:
+  ApiBaseUrl:
+    Description: HTTP API base URL
+    Value: !Sub "https://${BackendHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiBaseUrl"
+
+  OpenAISecretArn:
+    Description: ARN of the OpenAI API key secret (update after deploy)
+    Value: !Ref OpenAIApiKeySecret
+    Export:
+      Name: !Sub "${AWS::StackName}-OpenAISecretArn"
+
+  ChatFunctionArn:
+    Description: ARN of the Chat Lambda function
+    Value: !GetAtt ChatFunction.Arn
+
+  HealthFunctionArn:
+    Description: ARN of the Health Lambda function
+    Value: !GetAtt HealthFunction.Arn
+
+  DashboardUrl:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home#dashboards:name=ai-lambda-backend-dashboard"

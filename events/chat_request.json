@@ -1,0 +1,31 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /chat",
+  "rawPath": "/chat",
+  "rawQueryString": "",
+  "headers": {
+    "accept": "*/*",
+    "content-type": "application/json",
+    "host": "localhost"
+  },
+  "requestContext": {
+    "accountId": "123456789012",
+    "apiId": "local",
+    "domainName": "localhost",
+    "domainPrefix": "local",
+    "http": {
+      "method": "POST",
+      "path": "/chat",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "curl/8.0.0"
+    },
+    "requestId": "local-request-id",
+    "routeKey": "POST /chat",
+    "stage": "$default",
+    "time": "01/Jan/2026:00:00:00 +0000",
+    "timeEpoch": 1735689600000
+  },
+  "body": "{\"messages\": [{\"role\": \"user\", \"content\": \"Hello! What can you do?\"}]}",
+  "isBase64Encoded": false
+}
